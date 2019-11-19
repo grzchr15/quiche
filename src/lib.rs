@@ -381,6 +381,9 @@ pub struct Config {
     application_protos: Vec<Vec<u8>>,
 
     grease: bool,
+
+    // Congestion control algorithm to use
+    cc_algorithm: cc::Algorithm,
 }
 
 impl Config {
@@ -401,6 +404,7 @@ impl Config {
             tls_ctx,
             application_protos: Vec::new(),
             grease: true,
+            cc_algorithm: cc::Algorithm::Reno, // default cc algorithm
         })
     }
 
@@ -621,6 +625,20 @@ impl Config {
     /// The default value is `false`.
     pub fn set_disable_active_migration(&mut self, v: bool) {
         self.local_transport_params.disable_active_migration = v;
+    }
+
+    /// Sets the congestion control algorithm used by string.
+    ///
+    /// The default value is 'reno'.
+    pub fn set_cc_algorithm_name(&mut self, name: &str) {
+        self.cc_algorithm = cc::lookup_cc_algorithm(name);
+    }
+
+    /// Sets the congestion control algorithm used.
+    ///
+    /// The default value is 'quiche::cc::Algorithm::reno'.
+    pub fn set_cc_algorithm(&mut self, algo: cc::Algorithm) {
+        self.cc_algorithm = algo;
     }
 }
 
@@ -1019,6 +1037,16 @@ impl Connection {
 
             conn.derived_initial_secrets = true;
         }
+
+        // Initialize Congestion Control.
+        conn.recovery.cc = cc::new_congestion_control(config.cc_algorithm);
+
+        trace!(
+            "{} CC_INIT cwnd={}, ssthresh={}",
+            conn.trace_id,
+            conn.recovery.cc.cwnd(),
+            conn.recovery.cc.ssthresh(),
+        );
 
         Ok(conn)
     }
@@ -1600,7 +1628,7 @@ impl Connection {
         }
 
         // Calculate available space in the packet based on congestion window.
-        let mut left = cmp::min(self.recovery.cwnd(), b.cap());
+        let mut left = cmp::min(self.recovery.cwnd_available(), b.cap());
 
         // Limit data sent by the server based on the amount of data received
         // from the client before its address is validated.
@@ -2515,7 +2543,7 @@ impl Connection {
             recv: self.recv_count,
             sent: self.sent_count,
             lost: self.recovery.lost_count,
-            cwnd: self.recovery.cwnd(),
+            cwnd: self.recovery.cc.cwnd(),
             rtt: self.recovery.rtt(),
         }
     }
@@ -4872,6 +4900,7 @@ pub use crate::packet::Header;
 pub use crate::packet::Type;
 pub use crate::stream::StreamIter;
 
+mod cc;
 mod crypto;
 mod ffi;
 mod frame;
